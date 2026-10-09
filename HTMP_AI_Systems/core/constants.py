@@ -19,7 +19,8 @@ DEFAULT_PERSISTENCE_FRAMES = 15      # Số frame giữ vết khi mất dấu ng
 DEFAULT_ROI_WEB_SIZE = (640, 360)    # Kích thước chuẩn ROI trên Web
 DEFAULT_NMS_IOU_THRESHOLD = 0.5      # Ngưỡng IoU cho chống đếm trùng
 DEFAULT_STATUS_BUFFER_SEC = 1.0      # Bộ đệm xác nhận (giây) khi người QUAY LẠI (Chống nhiễu AI)
-DEFAULT_ABSENT_BUFFER_SEC = 10.0     # Bộ đệm xác nhận (giây) trước khi tính vắng mặt (Chống miss/flicker AI)
+DEFAULT_ABSENT_BUFFER_SEC = 7.0      # Bộ đệm (giây) khi mất dấu tại chỗ (Cúi người/che khuất/chớp AI)
+DEFAULT_LEAVING_CONFIRM_SEC = 2.0    # Bộ đệm (giây) khi người thực sự bước ra ngoài máy (Bắt ngay lập tức)
 
 # Dashboard
 DASHBOARD_JPEG_QUALITY = 75          # Chất lượng JPEG gửi lên Dashboard (Tăng từ 40 -> 75)

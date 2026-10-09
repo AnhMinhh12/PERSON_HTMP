@@ -434,15 +434,39 @@
                     const box = det.box;
                     const bx1 = box[0] * sx; const by1 = box[1] * sy;
                     const bx2 = box[2] * sx; const by2 = box[3] * sy;
-                    mCtx.strokeStyle = det.is_safe ? '#10b981' : '#f59e0b';
-                    mCtx.lineWidth = 3;
+
+                    const isLost = !!det.is_lost_track;
+                    const isSafe = !!det.is_safe;
+
+                    // Phân biệt 3 màu rõ ràng:
+                    // 1. isLost: Màu cam hổ phách (#f59e0b) nét đứt báo hiệu đang mất dấu / tìm lại vết
+                    // 2. isSafe: Màu xanh lá (#10b981) an toàn trực tiếp
+                    // 3. ngoài vùng: Màu đỏ cam (#f97316) không có trong vùng
+                    let strokeColor = '#10b981';
+                    let labelText = 'SECURE';
+                    if (isLost) {
+                        strokeColor = '#f59e0b';
+                        labelText = 'MẤT DẤU (TRACKING...)';
+                        mCtx.setLineDash([6, 4]); // Nét đứt thể hiện vết bù
+                    } else if (!isSafe) {
+                        strokeColor = '#ef4444';
+                        labelText = 'UNAUTHORIZED';
+                        mCtx.setLineDash([]);
+                    } else {
+                        mCtx.setLineDash([]);
+                    }
+
+                    mCtx.strokeStyle = strokeColor;
+                    mCtx.lineWidth = isLost ? 2.5 : 3;
                     mCtx.beginPath();
                     mCtx.roundRect(bx1, by1, bx2 - bx1, by2 - by1, 8);
                     mCtx.stroke();
+                    mCtx.setLineDash([]); // Reset nét đứt
+
                     // Sublabel
-                    mCtx.fillStyle = det.is_safe ? '#10b981' : '#f59e0b';
+                    mCtx.fillStyle = strokeColor;
                     mCtx.font = 'bold 10px Inter';
-                    mCtx.fillText(det.is_safe ? 'SECURE' : 'UNAUTHORIZED', bx1, by1 - 5);
+                    mCtx.fillText(labelText, bx1, by1 - 5);
                 });
             }
         }
@@ -1001,11 +1025,27 @@
                     const [bx1, by1] = getCanvasCoords(det.box[0], det.box[1]);
                     const [bx2, by2] = getCanvasCoords(det.box[2], det.box[3]);
 
-                    ctx.strokeStyle = det.is_safe ? 'rgba(16, 185, 129, 0.8)' : 'rgba(245, 158, 11, 0.9)';
-                    ctx.lineWidth = 1.5;
+                    const isLost = !!det.is_lost_track;
+                    const isSafe = !!det.is_safe;
+
+                    if (isLost) {
+                        ctx.strokeStyle = 'rgba(245, 158, 11, 0.9)'; // Màu cam hổ phách
+                        ctx.lineWidth = 1.5;
+                        ctx.setLineDash([4, 3]);
+                    } else if (!isSafe) {
+                        ctx.strokeStyle = 'rgba(239, 68, 68, 0.9)'; // Màu đỏ ngoài vùng
+                        ctx.lineWidth = 1.5;
+                        ctx.setLineDash([]);
+                    } else {
+                        ctx.strokeStyle = 'rgba(16, 185, 129, 0.8)'; // Màu xanh lá an toàn
+                        ctx.lineWidth = 1.5;
+                        ctx.setLineDash([]);
+                    }
+
                     ctx.beginPath();
                     ctx.roundRect(bx1, by1, bx2 - bx1, by2 - by1, 4);
                     ctx.stroke();
+                    ctx.setLineDash([]);
                 });
             }
         }

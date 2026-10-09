@@ -245,7 +245,9 @@ class AIEngine:
                 detection = {
                     "box": [int(x1), int(y1), int(x2), int(y2)], 
                     "is_safe": is_safe, 
-                    "zones": matched_zones
+                    "zones": matched_zones,
+                    "is_lost_track": False,
+                    "track_id": track_id
                 }
                 current_detections.append(detection)
 
@@ -253,12 +255,17 @@ class AIEngine:
                     found_ids.add(track_id)
                     self.memory[track_id] = {"detection": detection, "frames": 0}
 
-        # XỬ LÝ HÀNH VI "NHÁY" - TRUY XUẤT TRÍ NHỚ
+        # XỬ LÝ HÀNH VI "NHÁY" - TRUY XUẤT TRÍ NHỚ KHI MẤT DẤU (LOST TRACK)
         missing_ids = [tid for tid in self.memory if tid not in found_ids]
         for tid in missing_ids:
             self.memory[tid]["frames"] += 1
             if self.memory[tid]["frames"] <= self.max_memory_frames:
-                current_detections.append(self.memory[tid]["detection"])
+                # Đánh dấu rõ ràng là bounding box đang mất dấu tạm thời
+                mem_det = dict(self.memory[tid]["detection"])
+                mem_det["is_lost_track"] = True
+                mem_det["lost_frames"] = self.memory[tid]["frames"]
+                mem_det["track_id"] = tid
+                current_detections.append(mem_det)
             else:
                 del self.memory[tid]
 

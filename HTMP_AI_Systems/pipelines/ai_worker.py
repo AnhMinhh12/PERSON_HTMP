@@ -16,7 +16,8 @@ from datetime import datetime, timezone, timedelta
 from core.constants import (
     STATUS_WAITING, STATUS_SAFE, STATUS_LEFT, STATUS_VIOLATION, 
     DASHBOARD_JPEG_QUALITY, DASHBOARD_EMIT_HZ, DEFAULT_STATUS_BUFFER_SEC,
-    DEFAULT_ABSENT_BUFFER_SEC, GRID_JPEG_QUALITY, GRID_FRAME_SIZE, GRID_EMIT_HZ
+    DEFAULT_ABSENT_BUFFER_SEC, DEFAULT_LEAVING_CONFIRM_SEC,
+    GRID_JPEG_QUALITY, GRID_FRAME_SIZE, GRID_EMIT_HZ
 )
 from db.models import Zone
 from pipelines.camera_stream import CameraStreamer
@@ -178,6 +179,7 @@ class AIWorker(threading.Thread):
         zone_screenshots = {} # {machine_name: filename}
         occupied_confirm_timers = {} # {machine_name: seconds}
         absent_grace_timers = {} # {machine_name: seconds}
+        zone_last_worker_tracks = {} # {machine_name: set(track_ids)} Lưu track_id của công nhân từng đứng tại máy
         
         last_loop_time = time.time()
         last_ai_time = 0
@@ -217,11 +219,31 @@ class AIWorker(threading.Thread):
                 time_delta = now - (last_loop_time if last_loop_time > 0 else now)
                 last_loop_time = now
 
-                # 1. Xác định những máy nào có người
+                # 1. Xác định những máy nào có người & ánh xạ người ngoài máy
                 occupied_zones = set()
+                current_active_tracks_in_zones = {} # {zone_name: set(track_ids)}
+                tracks_outside_zones = set() # Những track_id hiện đang đứng NGOÀI tất cả các vùng ROI
+
                 for det in last_detections:
-                    for zone_name in det.get("zones", []):
-                        occupied_zones.add(zone_name)
+                    # ``AIEngine`` giữ lại một detection cũ vài frame để overlay không
+                    # nhấp nháy. Đó chỉ là vết theo dõi, không phải bằng chứng người
+                    # vẫn đang đứng ở máy. Nếu tính nó vào ROI thì người đã rời máy sẽ
+                    # vẫn làm vùng báo AN TOÀN cho tới khi bộ nhớ tracking hết hạn.
+                    if det.get("is_lost_track", False):
+                        continue
+
+                    t_id = det.get("track_id")
+                    det_zones = det.get("zones", [])
+                    if det_zones:
+                        for zone_name in det_zones:
+                            occupied_zones.add(zone_name)
+                            if zone_name not in current_active_tracks_in_zones:
+                                current_active_tracks_in_zones[zone_name] = set()
+                            if t_id and t_id != -1:
+                                current_active_tracks_in_zones[zone_name].add(t_id)
+                    else:
+                        if t_id and t_id != -1:
+                            tracks_outside_zones.add(t_id)
 
                 # 2. Cập nhật trạng thái cho từng vùng
                 zones_stats = []
@@ -232,32 +254,63 @@ class AIWorker(threading.Thread):
                         zone_screenshots[z_name] = None
                         occupied_confirm_timers[z_name] = 0.0
                         absent_grace_timers[z_name] = 0.0
+                        zone_last_worker_tracks[z_name] = set()
                     
                     is_occupied = z_name in occupied_zones
-                    people_in_this_zone = [det for det in last_detections if z_name in det.get("zones", [])]
+                    # Chỉ đếm detection của frame hiện tại; lost-track chỉ để vẽ UI.
+                    people_in_this_zone = [
+                        det for det in last_detections
+                        if not det.get("is_lost_track", False)
+                        and z_name in det.get("zones", [])
+                    ]
                     for det in people_in_this_zone: det["is_safe"] = True
 
                     real_missing_time = zone_timers[z_name]
 
                     if not is_occupied:
+                        # KIỂM TRA THÔNG MINH BẰNG TRACK ID:
+                        # Liệu công nhân của máy này có đang được nhìn thấy bước ra ngoài lối đi không?
+                        last_workers = zone_last_worker_tracks.get(z_name, set())
+                        worker_spotted_outside = bool(last_workers and (last_workers & tracks_outside_zones))
+
                         absent_grace_timers[z_name] += time_delta
-                        
-                        # Bộ đệm xác nhận vắng mặt 10 giây (chống miss/flicker AI khi cúi người hoặc che khuất)
-                        if absent_grace_timers[z_name] >= DEFAULT_ABSENT_BUFFER_SEC:
+
+                        if worker_spotted_outside:
+                            # 1. NẾU RA KHỎI VÙNG (THẤY NGƯỜI Ở NGOÀI): KHUNG ĐỎ NGAY LẬP TỨC!
                             occupied_confirm_timers[z_name] = 0.0
                             zone_timers[z_name] += time_delta
                             real_missing_time = zone_timers[z_name]
 
-                            if zone_timers[z_name] >= self.alarm_delay: z_status = STATUS_VIOLATION
-                            elif zone_timers[z_name] >= 1.0: z_status = STATUS_LEFT
-                            else: z_status = STATUS_SAFE
+                            # Đổi trạng thái sang RỜI VỊ TRÍ (khung máy đỏ ngay lập tức)
+                            if zone_timers[z_name] >= self.alarm_delay:
+                                z_status = STATUS_VIOLATION
+                            else:
+                                z_status = STATUS_LEFT
                         else:
-                            z_status = STATUS_SAFE if zone_timers[z_name] < 1.0 else STATUS_LEFT
-                            if zone_timers[z_name] >= self.alarm_delay: z_status = STATUS_VIOLATION
+                            # 2. NẾU MẤT DẤU TẠI CHỖ (Cúi người / che khuất / chớp model):
+                            # Chờ đệm 7s để chống báo nhầm khi người vẫn đang làm việc
+                            if absent_grace_timers[z_name] >= DEFAULT_ABSENT_BUFFER_SEC:
+                                occupied_confirm_timers[z_name] = 0.0
+                                zone_timers[z_name] += time_delta
+                                real_missing_time = zone_timers[z_name]
+
+                                if zone_timers[z_name] >= self.alarm_delay:
+                                    z_status = STATUS_VIOLATION
+                                else:
+                                    z_status = STATUS_LEFT
+                            else:
+                                z_status = STATUS_SAFE if zone_timers[z_name] < 1.0 else STATUS_LEFT
+                                if zone_timers[z_name] >= self.alarm_delay:
+                                    z_status = STATUS_VIOLATION
                     else:
                         absent_grace_timers[z_name] = 0.0
                         occupied_confirm_timers[z_name] += time_delta
                         
+                        # Ghi nhớ track_id của công nhân đang làm việc tại máy
+                        active_tracks = current_active_tracks_in_zones.get(z_name, set())
+                        if active_tracks:
+                            zone_last_worker_tracks[z_name] = set(active_tracks)
+
                         if occupied_confirm_timers[z_name] >= DEFAULT_STATUS_BUFFER_SEC:
                             z_status = STATUS_SAFE
                             zone_timers[z_name] = 0.0 
@@ -403,7 +456,15 @@ class AIWorker(threading.Thread):
             # Vẽ Bounding Box người
             for d in detections:
                 box = d["box"]; bx1, by1, bx2, by2 = int(box[0]*sx), int(box[1]*sy), int(box[2]*sx), int(box[3]*sy)
-                color = (0, 255, 0) if d["is_safe"] else (0, 255, 255)
+                if d.get("is_lost_track"):
+                    # Mất dấu tạm thời (đang dùng trí nhớ bù frame): Màu cam / Amber
+                    color = (0, 165, 255)
+                elif d.get("is_safe", False):
+                    # An toàn trực tiếp: Màu xanh lá cây
+                    color = (0, 255, 0)
+                else:
+                    # Ngoài vùng giám sát (bước ra ngoài): Màu ĐỎ báo động
+                    color = (0, 0, 255)
                 cv2.rectangle(save_frame, (bx1, by1), (bx2, by2), color, 2)
 
             # --- VẼ TIÊU ĐỀ: TỰ ĐỘNG XUỐNG DÒNG (WRAPPED TEXT) ---
